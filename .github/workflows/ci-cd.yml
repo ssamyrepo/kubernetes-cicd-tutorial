@@ -44,9 +44,12 @@ jobs:
 
       - name: Update GitOps repo (Windows PowerShell)
         if: runner.os == 'Windows' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: "powershell -NoProfile -ExecutionPolicy Bypass"
+        shell: "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& {0}\""
         env:
-          GIT_TOKEN: ${{ secrets.GITOPS_PAT }}
+          IMAGE: ghcr.io/ssamyrepo/kubernetes-cicd-tutorial
+          GITOPS_REPO: rslim087b/grade-api-gitops   # <-- confirm this is the intended repo
+          GITOPS_FILE: deployment.yaml
+          GIT_TOKEN: ${{ secrets.GITOPS_PAT }}      # PAT with repo write on the GitOps repo
           NEW_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -62,6 +65,7 @@ jobs:
           if (!(Test-Path $path)) { throw "File not found: $path" }
       
           $content = Get-Content -Raw -Path $path
+          # Match indented or non-indented `image:` lines
           $pattern = '^\s*image:\s*.*$'
           $replacement = "image: $($env:IMAGE):$($env:NEW_SHA)"
           $new = [regex]::Replace($content, $pattern, $replacement, 'Multiline')
