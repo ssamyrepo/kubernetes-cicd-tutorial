@@ -1,73 +1,106 @@
 name: CI/CD Pipeline
+
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # The image name your manifests expect:
+  IMAGE: ghcr.io/ssamyrepo/kubernetes-cicd-tutorial
+  GITOPS_REPO: rslim087b/grade-api-gitops
+  GITOPS_FILE: deployment.yaml
+
 jobs:
   build-and-push:
     runs-on: self-hosted
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.CR_PAT }}
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-      - name: Update GitOps repository
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+      # -------- GitOps update (Linux/macOS) --------
+      - name: Update GitOps repo (bash)
+        if: runner.os != 'Windows'
         shell: bash
         env:
-          GIT_TOKEN: ${{ secrets.GITOPS_PAT }}
+          GIT_TOKEN: ${{ secrets.GITOPS_PAT }} # PAT with write on the GitOps repo
+          NEW_SHA: ${{ github.sha }}
         run: |
-          # Configure git credential store
-          git config --global credential.helper store
-          echo "https://${GIT_TOKEN}:x-oauth-basic@github.com" > ~/.git-credentials
-          
-          # Remove any existing gitops directory
+          set -euxo pipefail
           rm -rf gitops
-          
-          # Clone repository using HTTPS URL without token
-          git clone https://github.com/rslim087a/grade-api-gitops.git gitops
+          git clone "https://github.com/${GITOPS_REPO}.git" gitops
           cd gitops
 
-          cat deployment.yaml
-          
-          # ---------- GITOPS UPDATE: Windows (Git Bash) ----------
-          - name: Update image in GitOps repo (Windows Git Bash)
-            if: runner.os == 'Windows'
-            shell: "C:\\Program Files\\Git\\usr\\bin\\bash.exe -eo pipefail {0}"
-            env:
-              GIT_TOKEN: ${{ secrets.GIT_TOKEN }}   # PAT with repo write on rslim087a/grade-api-gitops
-              NEW_SHA: ${{ github.sha }}
-              IMAGE: ${{ env.IMAGE }}
-            run: |
-              set -euxo pipefail
-    
-              rm -rf gitops
-              git clone https://github.com/rslim087a/grade-api-gitops.git gitops
-              cd gitops
-    
-              # GNU sed in Git Bash supports -i without backup suffix
-              sed -i "s|image: ${IMAGE}:.*|image: ${IMAGE}:${NEW_SHA}|g" deployment.yaml
-              cat deployment.yaml
-                    
-          # Commit changes
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add deployment.yaml
-          git commit -m "Update image to ${{ github.sha }}"
-          
-          # Push
-          git push -f https://${GIT_TOKEN}@github.com/rslim087a/grade-api-gitops.git main
+          # Update the image tag line
+          sed -i "s|^image: .*|image: ${IMAGE}:${NEW_SHA}|g" "${GITOPS_FILE}"
+          git config user.name  "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add "${GITOPS_FILE}"
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Update image to ${NEW_SHA}"
+            git push "https://${GIT_TOKEN}@github.com/${GITOPS_REPO}.git" HEAD:main
+          else
+            echo "No changes to commit."
+          fi
+
+      # -------- GitOps update (Windows) --------
+      - name: Update GitOps repo (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GIT_TOKEN: ${{ secrets.GITOPS_PAT }} # PAT with write on the GitOps repo
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:GIT_TOKEN)) { throw "GIT_TOKEN is empty." }
+          if ([string]::IsNullOrWhiteSpace($env:IMAGE)) { throw "IMAGE is empty." }
+
+          if (Test-Path gitops) { Remove-Item -Recurse -Force gitops }
+          git clone "https://github.com/$env:GITOPS_REPO.git" gitops
+          Set-Location gitops
+
+          $path = $env:GITOPS_FILE
+          $content = Get-Content -Raw -Path $path
+          # Replace any existing 'image: ...:<tag>' with the new one
+          $pattern = '^image:\s.*$'
+          $replacement = "image: $($env:IMAGE):$($env:NEW_SHA)"
+          $new = [regex]::Replace($content, $pattern, $replacement, 'Multiline')
+
+          if ($new -ne $content) {
+            Set-Content -Path $path -Value $new -Encoding UTF8
+            git config user.name  "GitHub Actions"
+            git config user.email "actions@github.com"
+            git add $path
+            git commit -m "Update image to $env:NEW_SHA"
+            git push "https://$($env:GIT_TOKEN)@github.com/$($env:GITOPS_REPO).git" HEAD:main
+          } else {
+            Write-Host "No changes to commit."
+          }
