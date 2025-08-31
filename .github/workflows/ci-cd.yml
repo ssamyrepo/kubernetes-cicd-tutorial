@@ -42,58 +42,30 @@ jobs:
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
 
-      # -------- GitOps update (Linux/macOS) --------
-      - name: Update GitOps repo (bash)
-        if: runner.os != 'Windows' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: bash
-        env:
-          GIT_TOKEN: ${{ secrets.GITOPS_PAT }} # PAT with write on the GitOps repo
-          NEW_SHA: ${{ github.sha }}
-        run: |
-          set -euxo pipefail
-          rm -rf gitops
-          git clone "https://github.com/${GITOPS_REPO}.git" gitops
-          cd gitops
-
-          # Update the image tag line (handles indentation)
-          sed -i "s|^\s*image:\s*.*$|image: ${IMAGE}:${NEW_SHA}|g" "${GITOPS_FILE}"
-
-          git config user.name  "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add "${GITOPS_FILE}"
-
-          if ! git diff --cached --quiet; then
-            git commit -m "Update image to ${NEW_SHA}"
-            git push "https://${GIT_TOKEN}@github.com/${GITOPS_REPO}.git" HEAD:main
-          else
-            echo "No changes to commit."
-          fi
-
-      # -------- GitOps update (Windows) --------
       - name: Update GitOps repo (Windows PowerShell)
         if: runner.os == 'Windows' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: powershell
+        shell: "powershell -NoProfile -ExecutionPolicy Bypass"
         env:
           GIT_TOKEN: ${{ secrets.GITOPS_PAT }}
           NEW_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-
+      
           if ([string]::IsNullOrWhiteSpace($env:GIT_TOKEN)) { throw "GIT_TOKEN is empty." }
           if ([string]::IsNullOrWhiteSpace($env:IMAGE)) { throw "IMAGE is empty." }
-
+      
           if (Test-Path gitops) { Remove-Item -Recurse -Force gitops }
           git clone "https://github.com/$env:GITOPS_REPO.git" gitops
           Set-Location gitops
-
+      
           $path = $env:GITOPS_FILE
           if (!(Test-Path $path)) { throw "File not found: $path" }
-
+      
           $content = Get-Content -Raw -Path $path
           $pattern = '^\s*image:\s*.*$'
           $replacement = "image: $($env:IMAGE):$($env:NEW_SHA)"
           $new = [regex]::Replace($content, $pattern, $replacement, 'Multiline')
-
+      
           if ($new -ne $content) {
             Set-Content -Path $path -Value $new -Encoding UTF8
             git config user.name  "GitHub Actions"
