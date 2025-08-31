@@ -44,12 +44,12 @@ jobs:
 
       - name: Update GitOps repo (Windows PowerShell)
         if: runner.os == 'Windows' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& {0}\""
+        shell: "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& {0}\""  
         env:
           IMAGE: ghcr.io/ssamyrepo/kubernetes-cicd-tutorial
-          GITOPS_REPO: rslim087b/grade-api-gitops   # <-- confirm this is the intended repo
+          GITOPS_REPO: rslim087b/grade-api-gitops                 # <-- confirm
           GITOPS_FILE: deployment.yaml
-          GIT_TOKEN: ${{ secrets.GITOPS_PAT }}      # PAT with repo write on the GitOps repo
+          GIT_TOKEN: ${{ secrets.GITOPS_PAT }}                    # PAT with write to that repo
           NEW_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -58,25 +58,39 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:IMAGE)) { throw "IMAGE is empty." }
       
           if (Test-Path gitops) { Remove-Item -Recurse -Force gitops }
-          git clone "https://github.com/$env:GITOPS_REPO.git" gitops
+      
+          # Clone WITH token to avoid auth issues on private repos
+          git clone "https://$($env:GIT_TOKEN)@github.com/$($env:GITOPS_REPO).git" gitops
           Set-Location gitops
+      
+          # Avoid CRLF churn on Windows runners
+          git config core.autocrlf false
       
           $path = $env:GITOPS_FILE
           if (!(Test-Path $path)) { throw "File not found: $path" }
       
           $content = Get-Content -Raw -Path $path
-          # Match indented or non-indented `image:` lines
           $pattern = '^\s*image:\s*.*$'
           $replacement = "image: $($env:IMAGE):$($env:NEW_SHA)"
           $new = [regex]::Replace($content, $pattern, $replacement, 'Multiline')
       
           if ($new -ne $content) {
             Set-Content -Path $path -Value $new -Encoding UTF8
+      
             git config user.name  "GitHub Actions"
             git config user.email "actions@github.com"
             git add $path
             git commit -m "Update image to $env:NEW_SHA"
+      
+            # Push WITH token explicitly
             git push "https://$($env:GIT_TOKEN)@github.com/$($env:GITOPS_REPO).git" HEAD:main
+      
+            # Optional: scrub token from local .git/config then delete working dir
+            git remote set-url origin "https://github.com/$env:GITOPS_REPO.git"
           } else {
             Write-Host "No changes to commit."
           }
+      
+          # Cleanup workspace (avoid leaving PAT in .git/config)
+          Set-Location ..
+          Remove-Item -Recurse -Force gitops
